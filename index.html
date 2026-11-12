@@ -119,6 +119,27 @@
   .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:30;max-width:90vw;text-align:center}
   .toast.show{opacity:1}
   /* ── 앱 전용 추가 ── */
+  button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  .modal{max-height:92vh;max-height:92dvh;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+  .cat-pick button{min-height:40px}
+  .quick button{min-height:36px;padding:6px 10px}
+  .qty button{width:38px;height:38px}
+  .search-box .x{min-width:36px;min-height:36px}
+  .sub-pick{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 13px}
+  .sub-pick button{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:6px 12px;font-size:13.5px;min-height:34px;cursor:pointer}
+  .sub-pick button.on{background:var(--accent-soft);border-color:var(--accent);font-weight:700}
+  .sub-pick:empty{display:none}
+  .form-h{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
+  .form-h h3{margin:0}
+  .favtoggle{border:1.5px solid var(--line);background:var(--bg);border-radius:999px;padding:7px 13px;font-size:14px;font-weight:700;min-height:38px;cursor:pointer;color:var(--sub);flex:none}
+  .favtoggle.on{border-color:var(--orange);background:var(--orange-soft);color:var(--orange)}
+  .fav-pick{margin:0}
+  .favmark{color:var(--orange);font-size:14px;margin-left:4px;vertical-align:1px}
+  .urgent .cat-h h2{color:var(--red)}
+  .urgent .sub{border-color:var(--orange);border-width:1.5px}
+  .qty .buy{width:auto;padding:0 11px;font-size:13.5px;font-weight:700;color:var(--accent);white-space:nowrap}
+  .qty .star{color:var(--orange);font-size:17px}
+  .linkbox{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:var(--bg);font-size:13px;color:var(--sub);margin-top:8px}
   input[type=search]::-webkit-search-cancel-button{-webkit-appearance:none;display:none}
   .wrap{padding-top:max(20px, env(safe-area-inset-top)); padding-left:max(16px, env(safe-area-inset-left)); padding-right:max(16px, env(safe-area-inset-right))}
   .fab{bottom:max(22px, calc(env(safe-area-inset-bottom) + 12px))}
@@ -183,7 +204,14 @@
 <!-- 추가 / 수정 -->
 <div class="modal-bg" id="formBg">
   <form class="modal" id="form" autocomplete="off">
-    <h3 id="formTitle">음식 추가</h3>
+    <div class="form-h">
+      <h3 id="formTitle">음식 추가</h3>
+      <button type="button" class="favtoggle" id="favToggle">☆ 즐겨찾기</button>
+    </div>
+    <div class="field" id="favField" style="display:none">
+      <label>⭐ 즐겨찾기에서 바로 넣기</label>
+      <div class="sub-pick fav-pick" id="favPick"></div>
+    </div>
     <div class="field">
       <label>대분류</label>
       <div class="cat-pick" id="catPick"></div>
@@ -191,14 +219,14 @@
     <div class="row">
       <div class="field">
         <label for="fSub">소분류 <em>(없으면 비워두세요)</em></label>
-        <input id="fSub" list="subList" placeholder="예: 사과">
-        <datalist id="subList"></datalist>
+        <input id="fSub" placeholder="예: 사과" maxlength="30" enterkeyhint="next">
       </div>
       <div class="field">
         <label for="fName">이름</label>
-        <input id="fName" placeholder="예: 부사 사과" maxlength="40">
+        <input id="fName" placeholder="예: 부사 사과" maxlength="40" enterkeyhint="done">
       </div>
     </div>
+    <div class="sub-pick" id="subPick" aria-label="자주 쓰는 소분류"></div>
     <div class="row">
       <div class="field" style="flex:0 0 120px">
         <label for="fQty">개수</label>
@@ -232,9 +260,11 @@
       <label class="help" style="display:block;margin:0">우리 가족 코드</label>
       <div class="code" id="setCode"></div>
       <div class="stack">
+        <button class="btn primary" id="shareBtn" style="display:none">카톡 등으로 초대 보내기</button>
         <button class="btn primary" id="copyLinkBtn">가족 초대 링크 복사</button>
         <button class="btn ghost" id="copyCodeBtn">코드만 복사</button>
       </div>
+      <input class="linkbox" id="linkBox" readonly aria-label="초대 링크">
       <p class="help" style="margin-top:10px">링크를 카톡으로 보내면, 가족이 누르기만 해도 같은 냉장고에 연결돼요.<br>
         ⚠️ 코드를 아는 사람은 목록을 보고 고칠 수 있으니 가족에게만 알려주세요.</p>
       <div class="divider"></div>

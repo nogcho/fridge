@@ -91,9 +91,55 @@ function lsLoad(){
 }
 const newId = () => "i" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
-function cloudWrite(id, body){
+// ── 즐겨찾기 (자주 사는 음식) ──
+let favs = [];
+let unsubFav = null;
+let favRulesMissing = false;
+const FAV_RULES_MSG = "즐겨찾기를 쓰려면 Firebase 보안 규칙을 새것으로 바꿔 주세요. (firestore.rules)";
+const LS_FAV = "fridge-favs-local-v1";
+function cleanFav(o){
+  return {
+    name: String(o.name || "").trim().slice(0, 40),
+    cat: CAT[o.cat] ? o.cat : "etc",
+    sub: String(o.sub || "").trim().slice(0, 30),
+    qty: Math.max(1, Math.min(9999, Math.floor(Number(o.qty) || 1))),
+    days: (() => { const d = Math.floor(Number(o.days)); return Number.isFinite(d) ? Math.max(-1, Math.min(3650, d)) : -1; })(),
+    created: Math.floor(Number(o.created) || Date.now())
+  };
+}
+// 같은 분류·소분류·이름이면 같은 즐겨찾기로 봐요
+function favIdOf(o){
+  const key = [o.cat, String(o.sub || "").trim(), String(o.name || "").trim()].join("|");
+  let h = 0x811c9dc5;
+  for(const ch of key){ h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+  return "f" + h.toString(36);
+}
+function lsSaveFav(){ try{ localStorage.setItem(LS_FAV, JSON.stringify(favs)); }catch(e){} }
+function lsLoadFav(){
+  try{
+    const a = JSON.parse(localStorage.getItem(LS_FAV) || "[]");
+    return Array.isArray(a) ? a.filter(x => x && x.id).map(x => Object.assign({id: x.id}, cleanFav(x))) : [];
+  }catch(e){ return []; }
+}
+const isFav = i => favs.some(f => f.id === favIdOf(i));
+const stockOf = f => items.filter(i => favIdOf(i) === f.id).reduce((s, i) => s + i.qty, 0);
+function saveFav(o){
+  const body = cleanFav(o); const id = favIdOf(body);
+  const k = favs.findIndex(f => f.id === id);
+  if(k >= 0){ body.created = favs[k].created; favs[k] = Object.assign({id}, body); } else favs.push(Object.assign({id}, body));
+  if(mode === "cloud") cloudWrite(id, body, fb && fb.favCol); else lsSaveFav();
+  render();
+}
+function removeFav(id){
+  if(!favs.some(f => f.id === id)) return;
+  favs = favs.filter(f => f.id !== id);
+  if(mode === "cloud") cloudWrite(id, null, fb && fb.favCol); else lsSaveFav();
+  render();
+}
+
+function cloudWrite(id, body, colRef){
   if(!fb) return;
-  const ref = fb.fs.doc(fb.col, id);
+  const ref = fb.fs.doc(colRef || fb.col, id);
   const p = body ? fb.fs.setDoc(ref, body) : fb.fs.deleteDoc(ref);
   // 인터넷이 없으면 휴대폰에 먼저 저장되고, 연결되면 자동으로 올라가요.
   p.catch(err => {
@@ -172,13 +218,24 @@ async function connect(code){
       fb = { fs, db, col: null };
     }
     if(unsub){ unsub(); unsub = null; }
+    if(unsubFav){ unsubFav(); unsubFav = null; }
     fb.col = fb.fs.collection(fb.db, "families", code, "items");
+    fb.favCol = fb.fs.collection(fb.db, "families", code, "favs");
+    favs = [];
+    unsubFav = fb.fs.onSnapshot(fb.favCol, snap => {
+      favRulesMissing = false;
+      favs = snap.docs.map(d => Object.assign({id: d.id}, cleanFav(d.data() || {})));
+      render();
+    }, err => {
+      console.error(err);
+      if(err && err.code === "permission-denied"){ favRulesMissing = true; setNotice("warn", FAV_RULES_MSG); }
+    });
     mode = "cloud";
     let first = true;
     unsub = fb.fs.onSnapshot(fb.col, { includeMetadataChanges: true }, snap => {
       online = !snap.metadata.fromCache;
       items = snap.docs.map(d => Object.assign({id: d.id}, clean(d.data() || {})));
-      if(online) setNotice();
+      if(online) favRulesMissing ? setNotice("warn", FAV_RULES_MSG) : setNotice();
       else setNotice("warn", "인터넷 연결이 없어요. 고친 내용은 휴대폰에 먼저 저장되고, 연결되면 가족에게 전달돼요.");
       first = false;
       render();
@@ -200,6 +257,7 @@ async function connect(code){
 function startLocal(msg){
   mode = "local";
   items = lsLoad();
+  favs = lsLoadFav();
   setNotice("warn", msg);
   render();
 }
@@ -226,6 +284,18 @@ function matches(it, q){
 }
 const isSoon = i => { const n = daysLeft(i.exp); return n !== null && n >= 0 && n <= 3; };
 const isExpired = i => { const n = daysLeft(i.exp); return n !== null && n < 0; };
+const isUrgent = i => isSoon(i) || isExpired(i);
+function matchesFav(f, q){
+  if(!q) return true;
+  q = q.toLowerCase();
+  const c = CAT[f.cat];
+  return [f.name, f.sub, c && c.name].some(v => v && String(v).toLowerCase().includes(q));
+}
+function fmtDays(n){
+  if(n >= 30 && n % 30 === 0) return (n / 30) + "달";
+  if(n >= 7 && n % 7 === 0) return (n / 7) + "주";
+  return n + "일";
+}
 const byExp = (a, b) => { const x = daysLeft(a.exp), y = daysLeft(b.exp); return (x === null ? 99999 : x) - (y === null ? 99999 : y) || (a.created - b.created); };
 
 function render(){
@@ -235,11 +305,13 @@ function render(){
     '<button class="stat red' + (filter==="expired"?" on":"") + '" data-f="expired"><b>' + items.filter(isExpired).length + '</b><span>기한 지남</span></button>';
 
   const counts = {}; items.forEach(i => counts[i.cat] = (counts[i.cat] || 0) + 1);
-  let chips = '<button class="chip' + (filter==="all"?" on":"") + '" data-f="all">전체</button>';
+  let chips = '<button class="chip' + (filter==="all"?" on":"") + '" data-f="all">전체</button>' +
+    '<button class="chip' + (filter==="fav"?" on":"") + '" data-f="fav">⭐ 즐겨찾기<small>' + favs.length + '</small></button>';
   CATS.forEach(c => { if(counts[c.id]) chips += '<button class="chip' + (filter===c.id?" on":"") + '" data-f="' + c.id + '">' + c.icon + ' ' + esc(c.name) + '<small>' + counts[c.id] + '</small></button>'; });
   $("chips").innerHTML = chips;
 
   if(mode === "loading"){ $("list").innerHTML = '<div class="empty">불러오는 중…</div>'; return; }
+  if(filter === "fav"){ renderFavs(); return; }
 
   let list = items.filter(i => matches(i, query));
   if(filter === "soon") list = list.filter(isSoon);
@@ -258,8 +330,21 @@ function render(){
   }
 
   let html = query ? '<div class="notice">‘' + esc(query) + '’ 검색 결과 ' + list.length + '개</div>' : "";
+
+  // 기한 지났거나 3일 안에 먹어야 하는 건 맨 위로
+  const showUrgent = filter === "all" || !!CAT[filter];
+  const urgent = showUrgent ? list.filter(isUrgent).sort(byExp) : [];
+  const rest = showUrgent ? list.filter(i => !isUrgent(i)) : list;
+  if(urgent.length){
+    const ex = urgent.filter(isExpired).length, so = urgent.length - ex;
+    html += '<section class="cat urgent"><div class="cat-h"><h2>⚠️ 빨리 먹어야 해요</h2><span>' +
+      [ex ? "기한 지남 " + ex + "개" : "", so ? "3일 이내 " + so + "개" : ""].filter(Boolean).join(" · ") + '</span></div><div class="sub">';
+    urgent.forEach(i => html += itemRow(i, true));
+    html += '</div></section>';
+  }
+
   CATS.forEach(c => {
-    const inCat = list.filter(i => i.cat === c.id);
+    const inCat = rest.filter(i => i.cat === c.id);
     if(!inCat.length) return;
     const total = inCat.reduce((s, i) => s + i.qty, 0);
     html += '<section class="cat"><div class="cat-h"><h2>' + c.icon + ' ' + esc(c.name) + '</h2><span>' + inCat.length + '종류 · 총 ' + total + '개</span></div>';
@@ -290,30 +375,103 @@ function render(){
   $("list").innerHTML = html;
 }
 
-function itemRow(i){
+function renderFavs(){
+  if(!favs.length){
+    $("list").innerHTML = '<div class="empty"><div class="big">⭐</div><p>아직 즐겨찾기가 없어요.<br>자주 사는 음식을 눌러서 <b>☆ 즐겨찾기</b>를 켜면 여기에 모여요.<br>다음에 살 때 한 번에 넣을 수 있어요.</p></div>';
+    return;
+  }
+  const fl = favs.filter(f => matchesFav(f, query))
+    .map(f => Object.assign({stock: stockOf(f)}, f))
+    .sort((a, b) => (a.stock > 0) - (b.stock > 0) || (a.name || a.sub).localeCompare(b.name || b.sub, "ko"));
+  if(!fl.length){ $("list").innerHTML = '<div class="empty"><div class="big">🤔</div><p>‘' + esc(query) + '’ 은(는) 즐겨찾기에 없어요.</p></div>'; return; }
+  const out = fl.filter(f => !f.stock).length;
+  let html = '<div class="notice">' + (out ? '🛒 다 떨어진 음식 <b>' + out + '개</b>가 위에 있어요. 장 볼 때 보세요.' : '즐겨찾기한 음식이 다 냉장고에 있어요 👍') + '</div><div class="sub">';
+  fl.forEach(f => {
+    const c = CAT[f.cat];
+    const title = f.name || f.sub;
+    const meta = [c.icon + " " + c.name]; if(f.sub && f.name) meta.push(f.sub); if(f.days >= 0) meta.push("보통 " + fmtDays(f.days) + " 보관");
+    html += '<div class="item"><div class="info" data-favbuy="' + esc(f.id) + '"><div class="name">' + hl(title, query) +
+      (f.stock ? '<span class="badge b-green">' + f.stock + '개 있음</span>' : '<span class="badge b-red">다 떨어짐</span>') +
+      '</div><div class="meta">' + esc(meta.join(" · ")) + '</div></div>' +
+      '<div class="qty"><button class="buy" data-favbuy="' + esc(f.id) + '">＋ 샀어요</button><button class="star" data-unfav="' + esc(f.id) + '" aria-label="즐겨찾기 빼기">★</button></div></div>';
+  });
+  $("list").innerHTML = html + '</div>';
+}
+
+function itemRow(i, withCat){
   const title = i.name || i.sub || "(이름 없음)";
   const meta = [i.exp ? "유통기한 " + shortDate(i.exp) : "유통기한 미입력"];
+  let catHtml = "";
+  if(withCat){ const c = CAT[i.cat]; catHtml = esc(c.icon + " " + c.name) + (i.sub && i.name ? " · " + hl(i.sub, query) : "") + " · "; }
   if(i.buy) meta.push(shortDate(i.buy) + " 구입");
-  return '<div class="item"><div class="info" data-edit="' + esc(i.id) + '"><div class="name">' + hl(title, query) + badge(i.exp) + '</div><div class="meta">' + esc(meta.join(" · ")) + '</div></div>' +
+  return '<div class="item"><div class="info" data-edit="' + esc(i.id) + '"><div class="name">' + hl(title, query) + (isFav(i) ? '<span class="favmark" title="즐겨찾기">★</span>' : '') + badge(i.exp) + '</div><div class="meta">' + catHtml + esc(meta.join(" · ")) + '</div></div>' +
     '<div class="qty"><button data-q="-1" data-id="' + esc(i.id) + '" aria-label="하나 빼기">−</button><b>' + i.qty + '개</b><button data-q="1" data-id="' + esc(i.id) + '" aria-label="하나 더하기">＋</button></div></div>';
 }
+
+// ───── 창(모달) 관리 ─────
+// 창을 열면 "뒤로 가기" 기록을 하나 넣어서, 휴대폰 뒤로 가기 버튼을 누르면 앱이 꺼지지 않고 창만 닫혀요.
+const MODALS = ["formBg", "setBg", "askBg"];
+let modalHistory = false;
+const anyOpen = () => MODALS.some(id => $(id).classList.contains("open"));
+function openModal(id){
+  MODALS.forEach(m => { if(m !== id) $(m).classList.remove("open"); });
+  $(id).classList.add("open");
+  if(!modalHistory){ try{ history.pushState({fridgeModal: true}, ""); modalHistory = true; }catch(e){} }
+}
+function closeModal(id){
+  $(id).classList.remove("open");
+  if(id === "askBg") askFn = null;
+  if(!anyOpen() && modalHistory){ modalHistory = false; try{ history.back(); }catch(e){} }
+}
+window.addEventListener("popstate", () => {
+  modalHistory = false;
+  MODALS.forEach(m => $(m).classList.remove("open"));
+  askFn = null;
+});
 
 // ───── 입력 폼 ─────
 let editingId = null;
 let pickedCat = "fruit";
+let favOn = false;
+let origFavId = null;
+function drawFavToggle(){
+  $("favToggle").textContent = favOn ? "★ 즐겨찾기" : "☆ 즐겨찾기";
+  $("favToggle").classList.toggle("on", favOn);
+}
+function drawFavPick(){
+  const show = !editingId && favs.length;
+  $("favField").style.display = show ? "" : "none";
+  if(!show) return;
+  const fl = favs.map(f => Object.assign({stock: stockOf(f)}, f))
+    .sort((a, b) => (a.stock > 0) - (b.stock > 0) || (a.name || a.sub).localeCompare(b.name || b.sub, "ko")).slice(0, 16);
+  $("favPick").innerHTML = fl.map(f => '<button type="button" data-fp="' + esc(f.id) + '">' + CAT[f.cat].icon + ' ' + esc(f.name || f.sub) + '</button>').join("");
+}
+function fillFromFav(f){
+  pickedCat = f.cat;
+  $("fSub").value = f.sub; $("fName").value = f.name; $("fQty").value = f.qty;
+  if(!$("fBuy").value) $("fBuy").value = today();
+  $("fExp").value = f.days >= 0 ? addDays($("fBuy").value, f.days) : "";
+  favOn = true; drawFavToggle(); drawCatPick();
+  $("fErr").textContent = "";
+}
 
 function drawCatPick(){
   $("catPick").innerHTML = CATS.map(c => '<button type="button" data-c="' + c.id + '" class="' + (pickedCat===c.id?"on":"") + '">' + c.icon + ' ' + esc(c.name) + '</button>').join("");
-  const used = items.filter(i => i.cat === pickedCat && i.sub).map(i => i.sub);
-  const subs = Array.from(new Set(CAT[pickedCat].subs.concat(used)));
-  $("subList").innerHTML = subs.map(s => '<option value="' + esc(s) + '">').join("");
+  drawSubPick();
+}
+// 소분류 추천: 기본 목록 + 이 분류에서 이미 쓴 소분류 (눌러서 바로 입력)
+function drawSubPick(){
+  const used = items.filter(i => i.cat === pickedCat && i.sub).map(i => i.sub.trim());
+  const subs = Array.from(new Set(used.concat(CAT[pickedCat].subs))).slice(0, 14);
+  const cur = $("fSub").value.trim();
+  $("subPick").innerHTML = subs.map(s => '<button type="button" data-s="' + esc(s) + '" class="' + (cur===s?"on":"") + '">' + esc(s) + '</button>').join("");
 }
 function drawQuick(){
   $("quick").innerHTML = [["3일",3],["1주",7],["2주",14],["1달",30],["3달",90]]
     .map(([t, n]) => '<button type="button" data-d="' + n + '">산 날 + ' + t + '</button>').join("")
     + '<button type="button" data-d="clear">비우기</button>';
 }
-function openForm(id){
+function openForm(id, favId){
   editingId = id || null;
   const it = id ? items.find(x => x.id === id) : null;
   $("formTitle").textContent = it ? "음식 정보 고치기" : "음식 추가";
@@ -325,13 +483,19 @@ function openForm(id){
   $("fExp").value = it ? it.exp : "";
   $("fErr").textContent = "";
   $("delBtn").style.display = it ? "" : "none";
-  drawCatPick(); drawQuick();
-  $("formBg").classList.add("open");
+  origFavId = it && isFav(it) ? favIdOf(it) : null;
+  favOn = !!origFavId;
+  drawCatPick(); drawQuick(); drawFavToggle(); drawFavPick();
+  const f = favId ? favs.find(x => x.id === favId) : null;
+  if(f){ fillFromFav(f); $("favField").style.display = "none"; }
+  $("form").scrollTop = 0;
+  openModal("formBg");
 }
-const closeForm = () => $("formBg").classList.remove("open");
+const closeForm = () => closeModal("formBg");
 
 $("form").addEventListener("submit", e => {
   e.preventDefault();
+  if(document.activeElement && document.activeElement.blur) document.activeElement.blur(); // 휴대폰 키보드 내리기
   const sub = $("fSub").value.trim();
   const name = $("fName").value.trim();
   const qty = Math.floor(Number($("fQty").value));
@@ -341,19 +505,41 @@ $("form").addEventListener("submit", e => {
   if(!(qty >= 1)){ $("fErr").textContent = "개수는 1개 이상으로 적어주세요."; return; }
   const old = editingId ? items.find(x => x.id === editingId) : null;
   saveItem(editingId || newId(), {name, sub, cat: pickedCat, qty, buy, exp, created: old ? old.created : Date.now()});
+  // 즐겨찾기 저장 / 빼기
+  const nf = {name, sub, cat: pickedCat};
+  if(favOn){
+    let days = -1;
+    if(exp){ const base = parse(buy) || parse(today()); days = Math.round((parse(exp) - base) / 86400000); if(days < 0) days = -1; }
+    if(origFavId && origFavId !== favIdOf(nf)) removeFav(origFavId);
+    saveFav(Object.assign({qty, days}, nf));
+  } else if(origFavId){
+    removeFav(origFavId);
+  }
   closeForm();
   toast(old ? "고쳤어요" : "냉장고에 넣었어요 ✓");
 });
 $("cancelBtn").onclick = closeForm;
 $("delBtn").onclick = () => {
   const id = editingId; const it = items.find(x => x.id === id); if(!it) return;
-  closeForm();
   ask("'" + (it.name || it.sub) + "' 을(를) 목록에서 지울까요?", "삭제", () => { removeItem(id); toast("지웠어요"); });
 };
 $("formBg").addEventListener("click", e => { if(e.target.id === "formBg") closeForm(); });
 $("catPick").addEventListener("click", e => {
   const b = e.target.closest("[data-c]"); if(!b) return;
   pickedCat = b.dataset.c; drawCatPick();
+});
+$("subPick").addEventListener("click", e => {
+  const b = e.target.closest("[data-s]"); if(!b) return;
+  const v = b.dataset.s;
+  $("fSub").value = ($("fSub").value.trim() === v) ? "" : v;  // 다시 누르면 지우기
+  $("fErr").textContent = "";
+  drawSubPick();
+});
+$("fSub").addEventListener("input", drawSubPick);
+$("favToggle").onclick = () => { favOn = !favOn; drawFavToggle(); toast(favOn ? "저장하면 즐겨찾기에 들어가요" : "저장하면 즐겨찾기에서 빠져요"); };
+$("favPick").addEventListener("click", e => {
+  const b = e.target.closest("[data-fp]"); if(!b) return;
+  const f = favs.find(x => x.id === b.dataset.fp); if(f) fillFromFav(f);
 });
 $("quick").addEventListener("click", e => {
   const b = e.target.closest("[data-d]"); if(!b) return;
@@ -369,18 +555,22 @@ $("newFamilyBtn").onclick = async () => {
   openSettings();
   toast("새 냉장고를 만들었어요. 가족에게 링크를 보내주세요");
 };
-$("joinBtn").onclick = async () => {
+async function join(){
   const c = normCode($("joinInput").value);
   if(!validCode(c)){ $("joinErr").textContent = "코드가 맞지 않아요. 12글자인지 확인해 주세요."; return; }
   $("joinErr").textContent = "";
+  if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
   familyCode = c; saveCode(c);
   showSetup(false);
   await connect(c);
   toast("가족 냉장고에 연결했어요 ✓");
-};
+}
+$("joinBtn").onclick = join;
+$("joinInput").addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); join(); } });
 
 // ───── 설정 ─────
 function inviteLink(){ return location.origin + location.pathname + "?family=" + familyCode; }
+const inviteText = () => "우리집 냉장고 같이 써요 👉 " + inviteLink();
 function openSettings(){
   if(!configured){
     $("setStatus").innerHTML = '<b class="off">● 이 기기에만 저장 중</b> — firebase-config.js 를 채우면 가족과 함께 쓸 수 있어요.';
@@ -389,27 +579,45 @@ function openSettings(){
     $("setStatus").innerHTML = mode === "cloud"
       ? (online ? '<b class="ok">● 가족 목록에 연결됨</b>' : '<b class="off">● 오프라인</b> — 연결되면 자동으로 맞춰져요')
       : '<b class="off">● 연결 안 됨</b>';
-    $("setFamily").style.display = validCode(familyCode) ? "" : "none";
-    $("setCode").textContent = validCode(familyCode) ? prettyCode(familyCode) : "";
+    const has = validCode(familyCode);
+    $("setFamily").style.display = has ? "" : "none";
+    $("setCode").textContent = has ? prettyCode(familyCode) : "";
+    $("linkBox").value = has ? inviteLink() : "";
   }
-  $("setBg").classList.add("open");
+  // 휴대폰이면 "카톡 등으로 보내기" 버튼 보이기
+  $("shareBtn").style.display = (navigator.share ? "" : "none");
+  openModal("setBg");
 }
 async function copy(text, okMsg){
-  try{ await navigator.clipboard.writeText(text); toast(okMsg); }
-  catch(e){ toast("복사가 안 돼요. 길게 눌러 직접 복사해 주세요"); }
+  try{ await navigator.clipboard.writeText(text); toast(okMsg); return; }catch(e){}
+  // 예전 방식으로 한 번 더 시도
+  try{
+    const t = document.createElement("textarea");
+    t.value = text; t.setAttribute("readonly", ""); t.style.position = "fixed"; t.style.opacity = "0";
+    document.body.appendChild(t); t.select(); t.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy"); document.body.removeChild(t);
+    if(ok){ toast(okMsg); return; }
+  }catch(e){}
+  $("linkBox").focus(); $("linkBox").select();
+  toast("복사가 안 돼요. 아래 링크를 길게 눌러 복사해 주세요");
 }
 $("gearBtn").onclick = openSettings;
-$("setClose").onclick = () => $("setBg").classList.remove("open");
-$("setBg").addEventListener("click", e => { if(e.target.id === "setBg") $("setBg").classList.remove("open"); });
-$("copyLinkBtn").onclick = () => copy("우리집 냉장고 같이 써요 👉 " + inviteLink(), "초대 링크를 복사했어요");
+$("setClose").onclick = () => closeModal("setBg");
+$("setBg").addEventListener("click", e => { if(e.target.id === "setBg") closeModal("setBg"); });
+$("shareBtn").onclick = async () => {
+  try{ await navigator.share({ title: "우리집 냉장고", text: "우리집 냉장고 같이 써요 👉", url: inviteLink() }); }
+  catch(e){ if(e && e.name !== "AbortError") copy(inviteText(), "초대 링크를 복사했어요"); }
+};
+$("copyLinkBtn").onclick = () => copy(inviteText(), "초대 링크를 복사했어요");
 $("copyCodeBtn").onclick = () => copy(prettyCode(familyCode), "코드를 복사했어요");
+$("linkBox").addEventListener("focus", e => e.target.select());
 $("switchBtn").onclick = () => {
-  $("setBg").classList.remove("open");
   ask("지금 냉장고 연결을 끊고 다른 가족 코드를 넣을까요? (지금 목록은 지워지지 않아요)", "바꾸기", () => {
     if(unsub){ unsub(); unsub = null; }
+    if(unsubFav){ unsubFav(); unsubFav = null; }
     try{ localStorage.removeItem(FAMILY_KEY); }catch(e){}
-    familyCode = ""; items = []; mode = "loading";
-    $("joinInput").value = "";
+    familyCode = ""; items = []; favs = []; mode = "loading";
+    $("joinInput").value = ""; $("joinErr").textContent = "";
     showSetup(true);
   });
 };
@@ -418,11 +626,12 @@ $("switchBtn").onclick = () => {
 let askFn = null;
 function ask(text, yesLabel, fn){
   $("askText").textContent = text; $("askYes").textContent = yesLabel || "확인";
-  askFn = fn; $("askBg").classList.add("open");
+  openModal("askBg");
+  askFn = fn;
 }
-$("askNo").onclick = () => { $("askBg").classList.remove("open"); askFn = null; };
-$("askYes").onclick = () => { $("askBg").classList.remove("open"); const f = askFn; askFn = null; if(f) f(); };
-$("askBg").addEventListener("click", e => { if(e.target.id === "askBg"){ $("askBg").classList.remove("open"); askFn = null; } });
+$("askNo").onclick = () => closeModal("askBg");
+$("askYes").onclick = () => { const f = askFn; closeModal("askBg"); if(f) f(); };
+$("askBg").addEventListener("click", e => { if(e.target.id === "askBg") closeModal("askBg"); });
 
 // ───── 토스트 ─────
 let tt = null;
@@ -431,16 +640,21 @@ function toast(t){ const el = $("toast"); el.textContent = t; el.classList.add("
 // ───── 공통 이벤트 ─────
 $("addBtn").onclick = () => openForm(null);
 $("q").addEventListener("input", e => { query = e.target.value.trim(); $("qx").style.display = query ? "block" : "none"; render(); });
-$("qx").onclick = () => { $("q").value = ""; query = ""; $("qx").style.display = "none"; render(); $("q").focus(); };
+$("q").addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); e.target.blur(); } });
+$("qx").onclick = () => { $("q").value = ""; query = ""; $("qx").style.display = "none"; render(); };
 document.addEventListener("click", e => {
   const f = e.target.closest("[data-f]");
   if(f){ filter = (filter === f.dataset.f && f.dataset.f !== "all") ? "all" : f.dataset.f; render(); return; }
   const q = e.target.closest("[data-q]");
   if(q){ bumpQty(q.dataset.id, Number(q.dataset.q)); return; }
+  const fb2 = e.target.closest("[data-favbuy]");
+  if(fb2){ openForm(null, fb2.dataset.favbuy); return; }
+  const uf = e.target.closest("[data-unfav]");
+  if(uf){ const f = favs.find(x => x.id === uf.dataset.unfav); if(f) ask("'" + (f.name || f.sub) + "' 을(를) 즐겨찾기에서 뺄까요? (냉장고 목록은 그대로예요)", "빼기", () => { removeFav(f.id); toast("즐겨찾기에서 뺐어요"); }); return; }
   const ed = e.target.closest("[data-edit]");
   if(ed) openForm(ed.dataset.edit);
 });
-document.addEventListener("keydown", e => { if(e.key === "Escape"){ closeForm(); $("askBg").classList.remove("open"); $("setBg").classList.remove("open"); } });
+document.addEventListener("keydown", e => { if(e.key === "Escape"){ MODALS.forEach(m => { if($(m).classList.contains("open")) closeModal(m); }); } });
 // 자정이 지나면 D-day 다시 계산
 setInterval(render, 60 * 60 * 1000);
 
