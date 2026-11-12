@@ -1,6 +1,6 @@
 // 서비스 워커: 앱 파일을 저장해 두었다가 인터넷이 없어도 앱이 열리게 해요.
 // 앱 파일을 고친 뒤에는 아래 버전 숫자를 하나 올려주세요. (예: v1 → v2)
-const CACHE = "fridge-v1";
+const CACHE = "fridge-v2";
 const SHELL = [
   "./",
   "./index.html",

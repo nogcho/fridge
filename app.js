@@ -339,7 +339,6 @@ $("form").addEventListener("submit", e => {
   const exp = $("fExp").value;
   if(!sub && !name){ $("fErr").textContent = "소분류나 이름 중 하나는 적어주세요."; return; }
   if(!(qty >= 1)){ $("fErr").textContent = "개수는 1개 이상으로 적어주세요."; return; }
-  if(!exp){ $("fErr").textContent = "유통기한을 골라주세요. (모르면 아래 버튼으로 대략 정해도 돼요)"; return; }
   const old = editingId ? items.find(x => x.id === editingId) : null;
   saveItem(editingId || newId(), {name, sub, cat: pickedCat, qty, buy, exp, created: old ? old.created : Date.now()});
   closeForm();
