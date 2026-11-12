@@ -43,6 +43,11 @@ self.addEventListener("fetch", e => {
         }
         return res;
       })
-      .catch(() => caches.match(req, { ignoreSearch: sameOrigin }).then(r => r || caches.match("./index.html")))
+      .catch(() => caches.match(req, { ignoreSearch: sameOrigin }).then(r => {
+        if (r) return r;
+        // 화면(페이지) 요청일 때만 저장해 둔 앱 화면을 대신 보여줘요.
+        if (req.mode === "navigate") return caches.match("./index.html");
+        return Response.error();
+      }))
   );
 });
