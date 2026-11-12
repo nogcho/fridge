@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 가족 코드(12글자)를 아는 사람만 그 가족의 냉장고 목록을 보고 고칠 수 있어요.
+    // 가족 목록 전체를 훑어보는 건 막혀 있어요.
+    match /families/{family}/items/{item} {
+      allow get, list, delete: if request.auth != null && family.size() == 12;
+
+      allow create, update: if request.auth != null && family.size() == 12
+        && request.resource.data.keys().hasOnly(['name','cat','sub','qty','buy','exp','created'])
+        && request.resource.data.name is string && request.resource.data.name.size() <= 40
+        && request.resource.data.sub is string  && request.resource.data.sub.size() <= 30
+        && request.resource.data.cat is string  && request.resource.data.cat.size() <= 10
+        && request.resource.data.qty is int     && request.resource.data.qty >= 0 && request.resource.data.qty <= 9999
+        && request.resource.data.buy is string  && request.resource.data.buy.size() <= 10
+        && request.resource.data.exp is string  && request.resource.data.exp.size() <= 10
+        && request.resource.data.created is int;
+    }
+  }
+}
